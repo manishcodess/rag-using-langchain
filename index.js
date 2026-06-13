@@ -54,7 +54,12 @@ async function indexDocument() {
     throw new Error('No text could be extracted from the PDF. Use a text-based PDF (not scanned image-only).');
   }
 
-  console.log(`Chunking completed (${cleanedDocs.length}/${chunkedDocs.length} non-empty chunks)`);
+  const maxChunks = Number(process.env.INDEX_MAX_CHUNKS || 0);
+  const docsToIndex = Number.isFinite(maxChunks) && maxChunks > 0
+    ? cleanedDocs.slice(0, maxChunks)
+    : cleanedDocs;
+
+  console.log(`Chunking completed (${docsToIndex.length}/${chunkedDocs.length} chunks selected)`);
 
   const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
   console.log('Embedding model configured');
@@ -63,7 +68,7 @@ async function indexDocument() {
   const pineconeIndex = pinecone.Index(process.env.PINECONE_INDEX_NAME);
   console.log('Pinecone configured');
 
-  const texts = cleanedDocs.map((doc) => doc.pageContent);
+  const texts = docsToIndex.map((doc) => doc.pageContent);
   const vectors = [];
   for (let i = 0; i < texts.length; i += 1) {
     const embedResponse = await ai.models.embedContent({
@@ -73,6 +78,10 @@ async function indexDocument() {
     });
     const values = embedResponse.embeddings?.[0]?.values ?? [];
     vectors.push(values);
+
+    if ((i + 1) % 10 === 0 || i + 1 === texts.length) {
+      console.log(`Embedded ${i + 1}/${texts.length} chunks`);
+    }
   }
 
   if (vectors.length === 0) {
@@ -80,7 +89,7 @@ async function indexDocument() {
   }
 
   const records = vectors.map((values, i) => {
-    const doc = cleanedDocs[i];
+    const doc = docsToIndex[i];
     const source = String(doc.metadata?.source ?? pdfPath);
     const page = String(doc.metadata?.loc?.pageNumber ?? doc.metadata?.pageNumber ?? 'unknown');
 
