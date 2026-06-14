@@ -5,6 +5,13 @@ import readlineSync from 'readline-sync';
 import { Pinecone } from '@pinecone-database/pinecone';
 import { GoogleGenAI } from "@google/genai";
 
+const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || 'gemini-2.5-flash';
+
+function isQuotaError(error) {
+  const message = String(error?.message ?? error ?? '');
+  return message.includes('RESOURCE_EXHAUSTED') || message.includes('quota');
+}
+
 function loadEnvFile() {
   const envPath = path.resolve('.env');
   if (!fs.existsSync(envPath)) {
@@ -33,25 +40,32 @@ function validateEnv() {
 
 
 async function transformQuery(question){
+  try {
+    History.push({
+      role: 'user',
+      parts: [{ text: question }],
+    });
 
-History.push({
-    role:'user',
-    parts:[{text:question}]
-    })  
-
-const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
-    contents: History,
-    config: {
-      systemInstruction: `You are a query rewriting expert. Based on the provided chat history, rephrase the "Follow Up user Question" into a complete, standalone question that can be understood without the chat history.
+    const response = await ai.models.generateContent({
+      model: CHAT_MODEL,
+      contents: History,
+      config: {
+        systemInstruction: `You are a query rewriting expert. Based on the provided chat history, rephrase the "Follow Up user Question" into a complete, standalone question that can be understood without the chat history.
     Only output the rewritten question and nothing else.
       `,
-    },
- });
- 
- History.pop()
- 
- return response.text;
+      },
+    });
+
+    return response.text;
+  } catch (error) {
+    if (isQuotaError(error)) {
+      return question;
+    }
+
+    throw error;
+  } finally {
+    History.pop();
+  }
 
 }
 
@@ -109,11 +123,13 @@ History.push({
     })  
 
 
-    const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash",
-    contents: History,
-    config: {
-      systemInstruction: `You have to behave like a Data Structure and Algorithm Expert.
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: CHAT_MODEL,
+        contents: History,
+        config: {
+          systemInstruction: `You have to behave like a Data Structure and Algorithm Expert.
     You will be given a context of relevant information and a user question.
     Your task is to answer the user's question based ONLY on the provided context.
     If the answer is not in the context, you must say "I could not find the answer in the provided document."
@@ -121,8 +137,16 @@ History.push({
       
       Context: ${context}
       `,
-    },
-   });
+        },
+      });
+    } catch (error) {
+      if (isQuotaError(error)) {
+        console.error('\nGemini quota is exhausted for this key/model. Add billing or use a key with available generation quota, then try again.\n');
+        return;
+      }
+
+      throw error;
+    }
 
 
   History.push({

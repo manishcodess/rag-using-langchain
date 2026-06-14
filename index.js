@@ -29,6 +29,32 @@ function validateEnv() {
   }
 }
 
+async function embedWithRetry(ai, text, retries = 5, initialDelay = 1000) {
+  let delay = initialDelay;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const embedResponse = await ai.models.embedContent({
+        model: 'gemini-embedding-001',
+        contents: text,
+        config: { outputDimensionality: 768 },
+      });
+      const values = embedResponse.embeddings?.[0]?.values ?? [];
+      if (values.length === 0) {
+        throw new Error('Empty embedding vector returned');
+      }
+      return values;
+    } catch (error) {
+      if (attempt === retries) {
+        throw error;
+      }
+      console.warn(`[WARNING] Embedding attempt ${attempt} failed: ${error.message}. Retrying in ${delay}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay *= 2;
+    }
+  }
+}
+
+
 async function indexDocument() {
   validateEnv();
 
@@ -71,12 +97,11 @@ async function indexDocument() {
   const texts = docsToIndex.map((doc) => doc.pageContent);
   const vectors = [];
   for (let i = 0; i < texts.length; i += 1) {
-    const embedResponse = await ai.models.embedContent({
-      model: 'gemini-embedding-001',
-      contents: texts[i],
-      config: { outputDimensionality: 768 },
-    });
-    const values = embedResponse.embeddings?.[0]?.values ?? [];
+    if (i > 0) {
+      // Small delay to prevent rapid-fire requests triggering rate limits or 503s
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    const values = await embedWithRetry(ai, texts[i]);
     vectors.push(values);
 
     if ((i + 1) % 10 === 0 || i + 1 === texts.length) {
